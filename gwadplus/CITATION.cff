@@ -1,0 +1,56 @@
+cff-version: "1.2.0"
+message: "If you use this software, please cite it as below."
+title: "GWAD+"
+abstract: >
+  Monte Carlo simulator for pulsar timing array (PTA) gravitational-wave timing
+  residuals. Computes the GW amplitude distribution from a user-supplied SMBHB
+  merger rate model, simulates realisations of the complex timing residual vector
+  across all PTA Fourier modes, and estimates the residual PDF via a three-region
+  composite (Rayleigh low tail, KDE bulk, full GWAD integral high tail). Includes
+  likelihood evaluation against NANOGrav 15-year free-spectrum data.
+version: "1.0.0"
+date-released: "2026-04-05"
+license: "GPL-3.0-or-later"
+authors:
+  - family-names: Raidal
+    given-names: Juhan
+    email: juhan.raidal@kbfi.ee
+    affiliation: >
+      Laboratory of High Energy and Computational Physics, NICPB,
+      Rävala 10, Tallinn 10143, Estonia
+  - family-names: Urrutia
+    given-names: Juan
+    email: juan.urrutia@kbfi.ee
+    affiliation: >
+      Laboratory of High Energy and Computational Physics, NICPB,
+      Rävala 10, Tallinn 10143, Estonia
+  - family-names: Vaskonen
+    given-names: Ville
+    email: ville.vaskonen@pd.infn.it
+    affiliation: >
+      Laboratory of High Energy and Computational Physics, NICPB,
+      Rävala 10, Tallinn 10143, Estonia
+  - family-names: Veermäe
+    given-names: Hardi
+    email: hardi.veermae@cern.ch
+    affiliation: >
+      Laboratory of High Energy and Computational Physics, NICPB,
+      Rävala 10, Tallinn 10143, Estonia
+
+# Uncomment and complete when the associated paper is published:
+# preferred-citation:
+#   type: article
+#   title: ""
+#   authors:
+#     - family-names: Raidal
+#       given-names: Juhan
+#     - family-names: Urrutia
+#       given-names: Juan
+#     - family-names: Vaskonen
+#       given-names: Ville
+#     - family-names: Veermäe
+#       given-names: Hardi
+#   journal: ""
+#   year:
+#   doi: ""
+#   url: "https://arxiv.org/abs/"
