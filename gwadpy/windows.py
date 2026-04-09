@@ -68,7 +68,7 @@ def _build_R_sampler(n_r=2000, n_z=300, n_psi=300):
                          bounds_error=False, fill_value=(0.0, 2.0)),
                 cdf_a, r_a)
 
-    print('  gwadplus: building |R| CDF table ...', end='', flush=True)
+    print('  gwadpy: building |R| CDF table ...', end='', flush=True)
     t0 = time.perf_counter()
 
     z   = np.linspace(0, 1, n_z)
@@ -101,45 +101,19 @@ _R_inv_cdf, _R_CDF_AXIS, _R_VALS_AXIS = _build_R_sampler()
 
 
 def sample_absR(n_samples, rng=None):
-    """
-    Sample |R| from the paper's exact distribution in the fL ≫ 1 limit.
-
-    Uses a precomputed inverse-CDF table (built on first import, cached to
-    ``gwadplus/_R_inv_cdf.npz``).  Satisfies ⟨|R|²⟩ = 4/15.
-
-    Parameters
-    ----------
-    n_samples : int
-    rng : numpy.random.Generator or None
-
-    Returns
-    -------
-    absR : float array of shape (n_samples,)
-    """
+    """Sample |R| from the paper's exact distribution (fL ≫ 1 limit, ⟨|R|²⟩=4/15)."""
     _rng = rng if rng is not None else np.random
     return _R_inv_cdf(_rng.random(n_samples)).astype(float)
 
 
 def sample_R(n_samples, rng=None):
-    """
-    Sample the complex GW antenna response R for n_samples random sky positions,
-    polarisation angles, and inclinations.
-
-    Parameters
-    ----------
-    rng : numpy.random.Generator or None
-        If provided, use this lock-free Generator instead of the global RandomState.
-        Pass a per-thread Generator to avoid lock contention in multithreaded code.
-
-    Returns complex array of shape (n_samples,).
-    """
+    """Sample complex GW antenna response R over random sky/polarisation/inclination."""
     _rng = rng if rng is not None else np.random
-    # Single batch draw — 4× fewer PRNG calls, same distributions.
     r         = _rng.random((n_samples, 4))
-    cos_theta = r[:, 0] * 2.0 - 1.0         # uniform(-1,  1)
-    psi       = r[:, 1] * np.pi              # uniform( 0,  π)
-    cos_iota  = r[:, 2] * 2.0 - 1.0         # uniform(-1,  1)
-    phi       = r[:, 3] * (2.0 * np.pi)     # uniform( 0, 2π)
+    cos_theta = r[:, 0] * 2.0 - 1.0
+    psi       = r[:, 1] * np.pi
+    cos_iota  = r[:, 2] * 2.0 - 1.0
+    phi       = r[:, 3] * (2.0 * np.pi)
     sin2_half = (1 - cos_theta) / 2
     Fp  = sin2_half * np.cos(2*psi)
     Fx  = sin2_half * np.sin(2*psi)

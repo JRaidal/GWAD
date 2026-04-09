@@ -1,4 +1,4 @@
-# GWAD+
+# GWADpy
 
 Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PDF estimation and likelihood evaluation against observational data.
 
@@ -9,6 +9,7 @@ Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PD
 3. Estimates the residual PDF at each mode via a three-region composite: CLT low tail, KDE bulk, and a full GWAD integral high tail.
 4. Produces a validation plot comparing simulated residuals to PTA data (NANOGrav 15yr format).
 5. Computes the overlap likelihood between model PDFs and PTA data.
+6. Computes and plots the no-interference (VA Gaussian) σ₀ mixing distribution `dP/d ln σ₀`.
 
 ## Package layout
 
@@ -16,12 +17,14 @@ Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PD
 |---|---|
 | `constants.py` | Physical and cosmological constants |
 | `cosmology.py` | Luminosity distance, comoving volume, GW orbital mechanics |
-| `merger_rates.py` | `Model I` (numerical), `Model II` (analytic) |
+| `merger_rates.py` | `ModelI` (numerical), `ModelII` (analytic) |
 | `gwad.py` | `BrokenPowerLawGWAD`, cosmological GWAD integral |
 | `windows.py` | PTA window functions, GW response sampler |
 | `simulator.py` | `GlobalResidualsSimulator` |
 | `analysis.py` | `compute_pdfs`, `compute_likelihood` |
 | `plotting.py` | `make_validation_plot` |
+| `sigma0.py` | `sample_sigma2`, `compute_sigma0_tail`, `composite_sigma0_pdf`, `make_sigma0_plot` |
+| `_nb_kernels.py` | Numba JIT kernels for residual and σ₀ MC sampling |
 | `__main__.py` | CLI entry point |
 
 ## Usage
@@ -29,7 +32,7 @@ Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PD
 Run from the parent directory:
 
 ```bash
-python -m gwadplus [global options] {modelI|modelII|bpl} [model options]
+python -m gwadpy [global options] {modelI|modelII|bpl} [model options]
 ```
 
 ### Global options
@@ -53,6 +56,8 @@ python -m gwadplus [global options] {modelI|modelII|bpl} [model options]
 | `--kde-bw` | `0.1` | KDE bandwidth (in log10 space) |
 | `--kde-max-pts` | `10000` | Maximum realisations used to fit each per-mode KDE |
 | `--gaussian` | off | Treat all sources as Gaussian; disables strong sources and the high-residual tail |
+| `--sigma0` | off | Also compute and save the σ₀ mixing distribution `dP/d ln σ₀` |
+| `--sigma0-n-real` | `100000` | MC realisations for the σ₀ histogram bulk |
 | `--pta-data-dir` | *(omit)* | Path to PTA data directory (enables likelihood) |
 
 ### Model options
@@ -60,7 +65,7 @@ python -m gwadplus [global options] {modelI|modelII|bpl} [model options]
 **`modelI`** — semi-numerical rate from halo merger tree convolved with a log-normal MBH–halo relation:
 
 ```bash
-python -m gwadplus modelI [--a 8.95] [--b 1.4] [--sigma 0.47] [--pbh 0.06]
+python -m gwadpy modelI [--a 8.95] [--b 1.4] [--sigma 0.47] [--pbh 0.06]
 ```
 
 The rate grid is built once and cached to `.cache/` for reuse.
@@ -68,27 +73,27 @@ The rate grid is built once and cached to `.cache/` for reuse.
 **`modelII`** — analytic phenomenological rate:
 
 ```bash
-python -m gwadplus modelII [--R0 4e-14] [--M-star 2.5e9] [--c -0.2] [--d 6.0] [--z0 0.3]
+python -m gwadpy modelII [--R0 4e-14] [--M-star 2.5e9] [--c -0.2] [--d 6.0] [--z0 0.3]
 ```
 
 **`bpl`** — broken power-law GWAD specified directly (bypasses the merger rate integral):
 
 ```bash
-python -m gwadplus bpl --N-b <float> --A-b <float> --p <float> --q <float> [--s 2.0]
+python -m gwadpy bpl --N-b <float> --A-b <float> --p <float> --q <float> [--s 2.0]
 ```
 
 ### Examples
 
 ```bash
 # ModelI with environmental hardening, compared to NANOGrav data
-python -m gwadplus --env-f-ref 3e-13 --pta-data-dir ./30f_fs{hd}_ceffyl \
+python -m gwadpy --env-f-ref 3e-13 --pta-data-dir ./30f_fs{hd}_ceffyl \
     modelI --a 8.95 --b 1.4 --sigma 0.47 --pbh 0.06
 
 # ModelII, custom output location
-python -m gwadplus --output-dir results --prefix run_mII modelII
+python -m gwadpy --output-dir results --prefix run_mII modelII
 
 # BPL GWAD, sinc window, fewer bins for a quick test
-python -m gwadplus --window sinc --n-bins 30 --n-real 2000 \
+python -m gwadpy --window sinc --n-bins 30 --n-real 2000 \
     bpl --N-b 1e10 --A-b 1e-15 --p 4.0 --q 1.5
 ```
 
@@ -98,6 +103,8 @@ python -m gwadplus --window sinc --n-bins 30 --n-real 2000 \
 |---|---|
 | `<prefix>_pdfs.npz` | Arrays: `f_modes`, `dt_grids`, `pdf`, `tail_norm`, `dt_cross` |
 | `<prefix>_validation.pdf` | Violin + single-mode PDF plot |
+| `<prefix>_sigma0.npz` | Arrays: `f_modes`, `sw`, `s2_draws`, `univ_grid`, `tail_all` (with `--sigma0`) |
+| `<prefix>_sigma0.pdf` | σ₀ mixing-distribution plot per mode (with `--sigma0`) |
 | stdout | Per-mode and total log-likelihood (if `--pta-data-dir` provided) |
 
 ## PTA data format
@@ -109,6 +116,43 @@ The directory passed to `--pta-data-dir` must contain:
 - `freqs.npy` — shape `(n_modes,)`, mode frequencies [Hz]
 
 This matches the output format of the Ceffyl free-spectrum analysis (NANOGrav 15yr).
+
+## Standalone scripts
+
+Several standalone scripts are provided for producing publication figures and diagnostics.  Each accepts the same model subcommands (`modelI`, `modelII`, `bpl`) and environmental-hardening flags as the main CLI.
+
+### `plot_sigma0.py` — σ₀ mixing distribution (single panel)
+
+Plots `dP/d ln σ₀` for multiple PTA modes overlaid in one panel.
+
+```bash
+python plot_sigma0.py [--k-modes 1 7 14] [--n-real 3000000] [--output sigma0.pdf] \
+    [--env-f-ref 30e-9] modelI [--pbh 0.37]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--k-modes` | `1 7 14` | PTA modes (1-indexed) to overlay |
+| `--n-real` | `3000000` | MC realisations for the σ₀ histogram |
+| `--n-tail-dex` | `1.5` | Decades above `x_hi` that the tail extends |
+| `--output` | `sigma0_panel.pdf` | Output file |
+
+### `plot_pdfs_conv.py` — residual PDFs with NI convolution overlay
+
+Produces the multi-row PDF panels with the VA Gaussian (no-interference) convolution PDF overlaid.
+
+```bash
+python plot_pdfs_conv.py [--k-modes 1 7 14] [--output pdfs_conv.pdf] \
+    [--env-f-ref 30e-9] modelI [--pbh 0.37]
+```
+
+### `count_sources.py` — expected source counts per PTA bin
+
+Prints a table of expected GW source counts `N_k = ∫ dN/(dA d ln f) d ln A d ln f` for each PTA Fourier mode, comparing GW-only and GW+env side by side.
+
+```bash
+python count_sources.py [--env-f-ref 30e-9] modelI [--pbh 0.37]
+```
 
 ## PDF construction
 

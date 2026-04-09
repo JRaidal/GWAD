@@ -112,17 +112,7 @@ def _composite_pdf(mag_1d, C_tail, n_hist=80,
 
 def _composite_rms(res_ki, C_tail, n_hist=80, low_quantile=0.01, min_counts=15,
                    gaussian=False):
-    """
-    Compute the RMS of the composite PDF analytically.
-
-    <x²> = (low-x analytic) + (bulk empirical) + (high-x analytic)
-
-    Low-x  tail: dP/d ln x = A·x²  →  ∫₀^{x_lo} x²·Ax² d ln x = A·x_lo⁴/4
-    High-x tail: dP/d ln x ~ C·x⁻³ →  ∫_{x_hi}^∞ x²·Cx⁻³ d ln x = C/x_hi
-
-    x_hi is the last histogram bin with >= min_counts, matching _composite_pdf.
-    A    = 2·q / x_lo²  (exact for Rayleigh, model-free otherwise)
-    """
+    """RMS of the composite PDF: analytic low/high tails + empirical bulk."""
     pos  = np.abs(res_ki); pos = pos[pos > 0]
     x_lo = float(np.quantile(pos, low_quantile))
     A    = 2 * low_quantile / x_lo**2
@@ -147,20 +137,7 @@ def make_validation_plot(res, res_strong, res_weak, tail_norm,
                          ng_data, sim, out_path, n_real, n_strong, model_label,
                          gaussian=False):
     """
-    Four-panel figure:
-      Left ×3 — PDF of |δt_k| for k=1, 7, 14, showing weak/strong/tail/total.
-      Right   — Violin plot across all modes with optional NANOGrav overlay.
-
-    Parameters
-    ----------
-    res, res_strong, res_weak : (n_real, n_modes) complex arrays
-    tail_norm   : (n_modes,) tail normalisation coefficients
-    ng_data     : list of (frequency, pdf_interpolator) from NANOGrav, or None
-    sim         : GlobalResidualsSimulator instance (for metadata)
-    out_path    : output file path (.pdf or .png)
-    n_real      : number of realisations (for title)
-    n_strong    : strong-source threshold (for title)
-    model_label : string for figure suptitle
+    Four-panel figure: PDF breakdown for k=1,7,14 (left×3) + violin across modes (right).
     """
     K_DEMOS = (1, 7, 14)
     x_pos_v = np.log10(sim.f_obs)

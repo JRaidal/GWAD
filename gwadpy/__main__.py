@@ -1,7 +1,7 @@
 """
-Entry point for `python -m GWAD+`.
+Entry point for `python -m GWADpy`.
 
-Run `python -m GWAD+ --help` for full usage.
+Run `python -m GWADpy --help` for full usage.
 """
 
 import argparse
@@ -24,9 +24,10 @@ from .plotting import make_validation_plot
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog='python -m gwadplus',
+        prog='python -m gwadpy',
         description='GW timing residual analysis — compute PDFs, validation plot, and likelihood.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        allow_abbrev=False,
     )
 
     # Output
@@ -70,6 +71,12 @@ def build_parser():
     p.add_argument('--gaussian', action='store_true',
                                  help='Treat all sources as Gaussian (forces n_strong=0, '
                                       'disables the power-law high-residual tail)')
+
+    # σ₀ mixing distribution
+    p.add_argument('--sigma0', action='store_true',
+                               help='Also compute and save the dP/d ln σ₀ mixing distribution')
+    p.add_argument('--sigma0-n-real', type=int, default=100_000,
+                                      help='MC realisations for the σ₀ histogram bulk')
 
     # PTA data (optional — needed for likelihood)
     p.add_argument('--pta-data-dir', default=None,
@@ -158,10 +165,11 @@ def main():
 
     # ── Compute and save PDFs ─────────────────────────────────────────────────
     print("  Computing KDE+tail PDFs ...", end='', flush=True)
+    _t0 = _time()
     dt_grids, pdf_out, dt_cross = compute_pdfs(
         res, tail_norm, args.n_modes, sim.f_obs,
         kde_bw=args.kde_bw, n_kde_max=args.kde_max_pts, sim=sim,
-        gaussian=args.gaussian)
+        gaussian=args.gaussian, verbose=False)
     npz_path = f"{prefix}_pdfs.npz"
     np.savez(npz_path,
              f_modes   = sim.f_obs,
@@ -169,7 +177,7 @@ def main():
              pdf       = pdf_out,
              tail_norm = tail_norm,
              dt_cross  = dt_cross)
-    print(f" done  →  {npz_path}")
+    print(f" done  ({_time() - _t0:.1f}s)  →  {npz_path}")
 
     # ── Load NANOGrav data ────────────────────────────────────────────────────
     ng_data = None
@@ -196,6 +204,38 @@ def main():
                          args.n_real, args.n_strong, model_label,
                          gaussian=args.gaussian)
     print(f"  Validation plot  →  {plot_path}")
+
+    # ── σ₀ mixing distribution ───────────────────────────────────────────────
+    if args.sigma0:
+        from .sigma0 import composite_sigma0_pdf, make_sigma0_plot
+        print(f"  σ₀ MC ({args.sigma0_n_real:,} realisations) ...", end='', flush=True)
+        _t0 = _time()
+        s0_data = composite_sigma0_pdf(
+            sim,
+            n_real   = args.sigma0_n_real,
+            rng      = np.random.default_rng(42),
+        )
+        print(f" done  ({_time() - _t0:.1f}s)")
+
+        # Save data
+        print("  Saving σ₀ data ...", end='', flush=True)
+        npz_s0 = f"{prefix}_sigma0.npz"
+        np.savez(
+            npz_s0,
+            f_modes   = sim.f_obs,           # (n_modes,)
+            sw        = s0_data['sw'],        # (n_modes,)  σ²_weak
+            s2_draws  = s0_data['s2_draws'],  # (n_real, n_modes)  raw σ₀² draws
+            univ_grid = s0_data['univ_grid'], # (n_u,)   universal σ₀ grid
+            tail_all  = s0_data['tail_all'],  # (n_u, n_modes)  analytic tail
+        )
+        print(f" done  →  {npz_s0}")
+
+        # Save plot
+        print("  Plotting σ₀ distribution ...", end='', flush=True)
+        _t0 = _time()
+        plot_s0 = f"{prefix}_sigma0.pdf"
+        make_sigma0_plot(sim, s0_data, plot_s0, model_label=model_label)
+        print(f" done  ({_time() - _t0:.1f}s)  →  {plot_s0}")
 
     # ── Likelihood ────────────────────────────────────────────────────────────
     if args.pta_data_dir is not None:

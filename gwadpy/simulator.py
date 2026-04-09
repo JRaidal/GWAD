@@ -1,10 +1,7 @@
 """
 GlobalResidualsSimulator: Monte Carlo simulator for PTA timing residuals.
-
-For each source-frequency bin the simulator pre-computes the GWAD statistics
-(threshold amplitude, weak-source variance, tail coefficient) and caches them
-to disk.  At run time it draws strong sources explicitly and adds the weak
-contribution as Gaussian noise.
+Pre-computes per-bin GWAD statistics; at run time draws strong sources explicitly
+and adds the weak background as Gaussian noise.
 """
 
 import os
@@ -89,10 +86,6 @@ class GlobalResidualsSimulator:
         A   = self.A_common
 
         # ── Tophat early exit ─────────────────────────────────────────────────
-        # For the tophat window a source at f contributes only when
-        # |f − f_k| < 0.5/T_obs.  Bins outside all mode passbands have
-        # sigma2_weak = 0, strong_cdf = None, C_fs unused → skip all 11
-        # expensive _gwad_density calls for these bins.
         if self.window_name == 'tophat':
             half_bw = 0.5 / self.T_obs
             if not np.any((self.f_obs - half_bw < fhi) & (self.f_obs + half_bw > flo)):
@@ -110,10 +103,7 @@ class GlobalResidualsSimulator:
         dN_dA     = gwad['number']
         delta_lnf = float((gwad['number'] / gwad['density'])[0])
 
-        # ── Fine log-log grid (2000 pts) for N(>A), CDF, and C_fs ────────────
-        # Use interp1d with bounds_error=False so that values outside the
-        # positive-support range return NaN (→ 0 in dN_fine after exp).
-        # This prevents constant right-extrapolation from inflating C_fs.
+        # ── Fine log-log grid for N(>A), CDF, and C_fs ───────────────────────
         _pos = dN_dA > 0
         if _pos.sum() >= 2:
             _fi    = interp1d(np.log(A[_pos]), np.log(dN_dA[_pos]),
@@ -175,12 +165,10 @@ class GlobalResidualsSimulator:
                                x=np.log(A[mask_weak]))
             sigma2_weak_per_mode += wq * half_dlnf * sum_A2_q / (4*np.pi*fq)**2 * w2
 
-        # N_strong = expected sources above A_th (used for Poisson draws at runtime)
         idx_th   = min(np.searchsorted(A_fine, A_th), len(N_gt) - 1)
         N_strong = float(N_gt[idx_th])
 
-        # Store log-log density for compute_gwad_pdf (avoids recomputing calculate_gwad)
-        _dens_c = gwad['density']   # dN/(dA dlnf) on A_common
+        _dens_c = gwad['density']
         _pos_c  = _dens_c > 0
         gwad_log_A = np.log(A[_pos_c])       if _pos_c.any() else np.array([])
         gwad_log_D = np.log(_dens_c[_pos_c]) if _pos_c.any() else np.array([])
@@ -230,15 +218,7 @@ class GlobalResidualsSimulator:
     def _process_strong_and_tail(stat, n_real, f_obs, T_obs,
                                   window_fn, window_name, chunk_size,
                                   n_tail_samples, rng):
-        """
-        Compute strong-source residuals for one bin.
-
-        Strong sources are drawn Poisson(N_strong) per realisation.
-        Tail normalisation is computed deterministically by compute_tail_norm();
-        n_tail_samples is accepted for API compatibility but ignored.
-
-        rng : numpy.random.Generator — per-bin, lock-free.
-        """
+        """Compute strong-source residuals for one bin (Poisson draws per realisation)."""
         n_modes = len(f_obs)
         res_s_local = np.zeros((n_real, n_modes), dtype=complex)
         tn_local    = np.zeros(n_modes)  # always zero; tail norm computed separately
@@ -252,8 +232,6 @@ class GlobalResidualsSimulator:
                 return res_s_local, tn_local
 
         # ── Strong sources: Poisson(N_strong) per realisation ─────────────────
-        # Pre-draw all Poisson counts, then dispatch to numba (parallel over
-        # realisations) or the numpy vectorised fallback (padded-grid trick).
         N_mean = stat['N_strong']
         if N_mean > 0 and stat['strong_cdf'] is not None:
             log_flo = np.log(flo); log_fhi = np.log(fhi)
@@ -267,8 +245,7 @@ class GlobalResidualsSimulator:
                     _R_CDF_AXIS, _R_VALS_AXIS,
                     window_name)
             else:
-                # Numpy fallback: pad each chunk to max Poisson draw.
-                # Phantom slots (A_s=0) contribute nothing to residuals.
+                # Numpy fallback: pad each chunk to max Poisson draw
                 cdf_xp = stat['strong_cdf']
                 cdf_fp = stat['strong_A_arr']
                 for start in range(0, n_real, chunk_size):
@@ -296,28 +273,17 @@ class GlobalResidualsSimulator:
 
         return res_s_local, tn_local
 
-    def compute_gwad_pdf(self, x_grid, ki, N_R=500, n_f_pts=20):
+    def compute_gwad_pdf(self, x_grid, ki, N_R=300, n_f_pts=10):
         """
-        Evaluate dP/d ln|δt_k| at each x in x_grid via the full GWAD integral:
+        Evaluate dP/d ln|δt_k| via the GWAD integral, using dN/dA from _bin_cache.
 
-            dP/d ln x ≈ ∫ d|R| p(|R|) ∫ d ln f  A* · dN/(dA dlnf)|_{A*=4πfx/(|R||w_k^+(f)|}
-
-        Uses the actual dN/dA stored in _bin_cache (no extra calculate_gwad calls).
-        Asymptotes to Λ_k x^{-3} at large x; more accurate at intermediate x.
-        Vectorised over x_grid — no Python loop over individual x values.
-
-        Parameters
-        ----------
-        x_grid  : (N_x,) array — |δt| evaluation points [s]
-        ki      : int          — 0-indexed PTA mode
-        N_R     : int          — |R| Monte Carlo samples (default 500)
-        n_f_pts : int          — quadrature points per source-frequency bin
+        dP/d ln x ≈ ∫ d|R| p(|R|) ∫ d ln f  A* · dN/(dA d ln f)|_{A*=4πfx/(|R||w_k⁺(f)|}
         """
         fk     = self.f_obs[ki]
         x_grid = np.asarray(x_grid, dtype=float)
         N_x    = len(x_grid)
 
-        # Build per-bin interpolators from cached log-density arrays
+        # Build per-bin data from cached log-density arrays
         bin_data = []
         for s in self._bin_cache:
             if s['N_tot'] <= 0 or s['C_fs'] <= 0:
@@ -327,9 +293,7 @@ class GlobalResidualsSimulator:
                 continue
             bin_data.append({
                 'flo': s['flo'], 'fhi': s['fhi'],
-                'log_interp': interp1d(logA, logD, kind='linear',
-                                       bounds_error=False,
-                                       fill_value=(logD[0], -np.inf)),
+                'logA': logA, 'logD': logD,
                 'A_min': np.exp(logA[0]),
                 'A_max': np.exp(logA[-1]),
             })
@@ -339,47 +303,34 @@ class GlobalResidualsSimulator:
 
         for bd in bin_data:
             flo, fhi = bd['flo'], bd['fhi']
-            f_pts = np.linspace(flo, fhi, n_f_pts)
-            w_abs = np.abs(self.window_fn(f_pts, fk, self.T_obs))  # (N_f,)
-            # Vectorise over x: for each f-point evaluate the (N_x, N_R) grid
+            logA = bd['logA'];  logD = bd['logD']
+
+            f_pts  = np.linspace(flo, fhi, n_f_pts)
+            w_abs  = np.abs(self.window_fn(f_pts, fk, self.T_obs))  # (N_f,)
+
+            # Loop over f-points; each iteration works on (N_x, N_R) arrays.
+            # np.interp on 250k elements is ~10× faster than interp1d.
             integrand_lnf = np.zeros((N_x, n_f_pts))
             for fi, (fq, wq) in enumerate(zip(f_pts, w_abs)):
                 if wq <= 0:
                     continue
-                # A*(ix, ir) = (4π fq / wq) * x_grid[ix] / R_samp[ir]
                 A_star = (4.0 * np.pi * fq / wq) * x_grid[:, None] / R_samp[None, :]
                 valid  = (A_star >= bd['A_min']) & (A_star <= bd['A_max'])
                 logA_s = np.log(np.where(A_star > 0, A_star, 1.0))
-                logD_v = np.where(valid, bd['log_interp'](logA_s), -np.inf)
-                dens   = np.where(valid, np.exp(logD_v), 0.0)  # (N_x, N_R)
+                logD_v = np.interp(logA_s.ravel(), logA, logD,
+                                   left=logD[0], right=-np.inf)
+                dens   = np.where(valid, np.exp(logD_v.reshape(N_x, N_R)), 0.0)
                 integrand_lnf[:, fi] = np.mean(A_star * dens, axis=1)
+
             pdf += np.trapz(integrand_lnf, x=np.log(f_pts), axis=1)
 
         return pdf
 
     def compute_tail_norm(self, n_pts=40):
         """
-        Compute tail normalisation coefficients Λ_k deterministically via the
-        window-function integral:
-
-            Λ_k = (1/256π³) × Σ_bins ∫_flo^fhi df/f^4 × C(f) × |w_k^+(f)|^3
-
-        where C(f) = C_fs / Δln(f) is the spectral density of the Euclidean
-        A^{-4} plateau (C_fs = max_A [A^4 · dN/dA]).
-
-        This replaces the Monte Carlo <|g_k|^3> estimator, giving:
-          - no sampling noise (deterministic)
-          - correct frequency weighting within each bin (not just tophat on/off)
-          - proper sidelobe contributions for sinc / tm / whitened windows
-
-        Parameters
-        ----------
-        n_pts : int
-            Quadrature points per source-frequency bin (default 40).
-
-        Returns
-        -------
-        tail_norm : (n_modes,) array — Λ_k coefficients [s^3]
+        Compute tail normalisation Λ_k deterministically:
+            Λ_k = (1/256π³) Σ_bins ∫_flo^fhi df/f^4 · C(f) · |w_k^+(f)|^3
+        Returns (n_modes,) array of Λ_k [s^3].
         """
         tn = np.zeros(self.n_modes)
         for s in self._bin_cache:
@@ -394,23 +345,7 @@ class GlobalResidualsSimulator:
         return tn / (256.0 * np.pi**3)
 
     def compute_sigma_k(self):
-        """
-        Compute the per-mode weak-source Gaussian standard deviation σ_k
-        from the pre-computed bin cache.
-
-        σ_k is the per-component (real or imaginary) standard deviation of
-        the weak-source contribution to δt_k.  The modulus |δt_k_weak|
-        follows a Rayleigh distribution with parameter σ_k, giving
-
-            dP/d ln|δt_k| = (|δt_k|²/σ_k²) exp(−|δt_k|²/(2σ_k²))
-
-        and a low-tail power law  dP/d ln|δt_k| ≈ |δt_k|²/σ_k²  with
-        normalization coefficient  A = 1/σ_k².
-
-        Returns
-        -------
-        sigma_k : (n_modes,) array  [seconds]
-        """
+        """Compute per-mode weak-source σ_k (Rayleigh parameter); returns (n_modes,) [s]."""
         if self._bin_cache is None:
             raise RuntimeError("Call precompute_bin_stats() first.")
         total_sigma2 = sum(s['sigma2_weak_per_mode'] for s in self._bin_cache)
@@ -420,29 +355,7 @@ class GlobalResidualsSimulator:
                       chunk_size=1000, n_tail_samples=None, verbose=True):
         """
         Simulate n_real realisations of the GW timing residual vector.
-
-        Parameters
-        ----------
-        n_workers : int or None
-            Number of concurrent Python workers.  Ignored when the numba
-            kernel is active — numba parallelises internally over realisations
-            using prange, and n_workers is forced to 1 so only one res_s
-            array lives in memory at a time.  With the numpy fallback,
-            controls bin-level parallelism; lower values reduce peak memory.
-        chunk_size : int
-            Realisations processed per chunk inside each worker.
-            Lower values reduce per-worker intermediate memory.
-        verbose : bool
-            Print per-section timing breakdown.
-
-        Returns
-        -------
-        res        : (n_real, n_modes) complex — total residuals
-        res_strong : (n_real, n_modes) complex — strong-source contribution
-        res_weak   : (n_real, n_modes) complex — weak (Gaussian) contribution
-        tail_norm  : (n_modes,)        — tail normalisation coefficients Λ_k,
-                                         computed via compute_tail_norm() (deterministic)
-        n_tail_samples : ignored (kept for API compatibility)
+        Returns (res, res_strong, res_weak, tail_norm).
         """
         timings = {}
 
@@ -451,20 +364,14 @@ class GlobalResidualsSimulator:
         if self._bin_cache is None or self._cached_n_strong != n_strong:
             self.precompute_bin_stats(n_strong)
 
-        # ── Weak sources: single Gaussian draw over all bins ─────────────────
-        # Memory: 2 × (n_real × n_modes) floats — negligible.
+        # ── Weak sources ──────────────────────────────────────────────────────
         with _timed('weak', timings):
             total_sigma2 = sum(s['sigma2_weak_per_mode'] for s in self._bin_cache)
             sigma_k = np.sqrt(np.maximum(total_sigma2 * R_MEAN_SQ / 2.0, 0.0))
             res_w = (np.random.standard_normal((n_real, self.n_modes)) +
                      1j * np.random.standard_normal((n_real, self.n_modes))) * sigma_k[None, :]
 
-        # ── Strong sources + tail: parallel over bins ─────────────────────────
-        # When the numba kernel is active it parallelises internally over
-        # realisations (prange), so we use n_workers=1 to keep only one
-        # res_s array (≈22 MB) in memory at a time — fitting in L3 cache
-        # rather than n_workers × 22 MB thrashing RAM.
-        # With numpy fallback, bin-level parallelism across workers is used.
+        # ── Strong sources + tail: parallelised via numba (numpy fallback) ──────
         if NUMBA_AVAILABLE and self.window_name is not None:
             n_w = 1
         else:
@@ -473,7 +380,6 @@ class GlobalResidualsSimulator:
 
         res_s = np.zeros((n_real, self.n_modes), dtype=complex)
 
-        # One independent Generator per bin — lock-free, no global RandomState contention.
         bin_rngs = [_default_rng() for _ in self._bin_cache]
 
         with _timed('strong', timings):

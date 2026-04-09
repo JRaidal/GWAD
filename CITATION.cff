@@ -1,6 +1,6 @@
 cff-version: "1.2.0"
 message: "If you use this software, please cite it as below."
-title: "GWAD+"
+title: "GWADpy"
 abstract: >
   Monte Carlo simulator for pulsar timing array (PTA) gravitational-wave timing
   residuals. Computes the GW amplitude distribution from a user-supplied SMBHB

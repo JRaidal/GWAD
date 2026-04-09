@@ -47,8 +47,7 @@ def print_gwad_profile():
 
 _GL_XI, _GL_WI = leggauss(2)
 
-# ── Cosmological grids precomputed once at import time ────────────────────────
-# _gwad_density needs these for every call; building them per-call wastes time.
+# ── Cosmological grids (module-level, built once) ─────────────────────────────
 _LOGZ_GWAD  = np.linspace(np.log10(1e-9), np.log10(8.0), 150)
 _Z_GWAD     = 10.0 ** _LOGZ_GWAD
 _DV_GWAD    = DVc(_Z_GWAD) * 1e-9 * _Z_GWAD * np.log(10) / (1.0 + _Z_GWAD)
@@ -59,8 +58,7 @@ _KERN_GWAD  = np.where(_DISC_GWAD > 1e-10,
                        1.0 / (np.log(10)**2 * _ETA_GWAD * np.sqrt(_DISC_GWAD)),
                        0.0)
 
-# ── Precomputed m1/m2 coefficients for _ETA_GWAD (depend only on eta, not Mc) ─
-# m1 = Mc * _M1C_GWAD[k],  m2 = Mc * _M2C_GWAD[k]  for each eta index k
+# ── m1/m2 coefficients: m1 = Mc·_M1C_GWAD[k], m2 = Mc·_M2C_GWAD[k] ──────────
 _s_eta    = np.sqrt(np.maximum(1.0 - 4.0 * _ETA_GWAD, 0.0))
 _A_term   = 1.0 + _s_eta + _ETA_GWAD * (-5.0 - 3.0*_s_eta + (5.0 + _s_eta) * _ETA_GWAD)
 _A5_eta   = np.power(_A_term, 0.2)
@@ -70,8 +68,7 @@ _M2C_GWAD = -((-1.0 + _s_eta + 2.0 * _ETA_GWAD) * _A5_eta) / (
               2.0 * _21_5 * np.power(_ETA_GWAD, 1.6))
 del _s_eta, _A_term, _A5_eta, _21_5
 
-# ── Precomputed trapz weights for the double integration ──────────────────────
-# Replace nested simpson() calls with a single np.einsum using these 2-D weights.
+# ── Trapz weights for the (z, η) double integration ──────────────────────────
 _dlogz     = _LOGZ_GWAD[1] - _LOGZ_GWAD[0]
 _W_Z_GWAD  = np.full(len(_LOGZ_GWAD), _dlogz); _W_Z_GWAD[0] *= 0.5; _W_Z_GWAD[-1] *= 0.5
 _deta      = _ETA_GWAD[1] - _ETA_GWAD[0]
@@ -81,17 +78,8 @@ _W2D_GWAD  = _W_Z_GWAD[:, None] * _W_ETA_GWAD[None, :]   # (n_z, n_eta)
 
 class BrokenPowerLawGWAD:
     r"""
-    Frequency-independent broken power-law amplitude distribution:
-
-        dN/dA = N_b (p+q)^s / [ q (A/A_b)^{p/s} + p (A/A_b)^{q/s} ]^s
-
-    Parameters
-    ----------
-    N_b : normalisation at A = A_b  [strain^{-1}]
-    A_b : break amplitude            [strain]
-    p   : high-A slope
-    q   : low-A slope
-    s   : transition sharpness
+    Frequency-independent broken power-law:
+    dN/dA = N_b (p+q)^s / [ q (A/A_b)^{p/s} + p (A/A_b)^{q/s} ]^s
     """
     def __init__(self, N_b, A_b, p, q, s=2.0):
         self.N_b=N_b; self.A_b=A_b; self.p=p; self.q=q; self.s=s
@@ -112,7 +100,6 @@ def _gwad_density(A_array, f, rate_model, env_params, z_min=0.0):
     alpha_env = (env_params or {}).get('alpha', 8/3)
     beta_env  = (env_params or {}).get('beta',  5/8)
 
-    # Use module-level grids (built once at import); z_min is almost always 0.
     logz     = _LOGZ_GWAD
     Z        = _Z_GWAD
     dV_dlogz = _DV_GWAD
@@ -131,7 +118,7 @@ def _gwad_density(A_array, f, rate_model, env_params, z_min=0.0):
     f_b    = f * (1.0 + Z) / 2.0
     A_arr  = np.asarray(A_array)
     Mc_2d  = ((A_arr[:, None] * DL_sec[None, :]) /
-              (4.0 * (2.0*np.pi*f_b[None, :])**(2.0/3.0)))**(3.0/5.0) / TSun
+              (4.0 * (1.0 + Z[None, :]) * (2.0*np.pi*f_b[None, :])**(2.0/3.0)))**(3.0/5.0) / TSun
     _acc('f_b+Mc_2d', t0)
 
     t0 = _t()
@@ -146,8 +133,7 @@ def _gwad_density(A_array, f, rate_model, env_params, z_min=0.0):
         return simpson(integrand, x=logz, axis=1)
 
     elif hasattr(rate_model, 'R_eff_eval'):
-        # Fast path for ModelI: η-integrated rate R_eff(Mc,z) precomputed as 2-D table.
-        # Eliminates the (n_A × n_z × n_eta) = 900k tensor entirely.
+        # ModelI fast path: η-integrated rate precomputed as 2-D table.
         t0 = _t()
         R_eff_2d = rate_model.R_eff_eval(Mc_2d, Z)
         _acc('R_eff_eval', t0)
@@ -184,15 +170,7 @@ def _gwad_density(A_array, f, rate_model, env_params, z_min=0.0):
 
 
 def calculate_gwad(A_array, f_obs, rate_model, env_params=None, z_min=0.0, f_width=2e-9):
-    """
-    Compute the GW amplitude distribution at frequency f_obs.
-
-    Returns
-    -------
-    dict with keys:
-        'density' : dN/(dA d ln f) evaluated at f_obs
-        'number'  : integral of dN/(dA d ln f) over the frequency bin
-    """
+    """Compute dN/(dA d ln f) at f_obs; returns dict with 'density' and 'number'."""
     f_min = max(f_obs - f_width/2.0, f_obs*1e-3)
     f_max = f_obs + f_width/2.0
 

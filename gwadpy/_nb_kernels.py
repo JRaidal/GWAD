@@ -1,23 +1,4 @@
-"""
-Numba-JIT compiled kernels for the strong-source Monte Carlo accumulation.
-
-Each kernel processes all n_real realisations for one frequency bin in a
-single call.  Random draws, antenna response, and window evaluation are all
-computed inline — no intermediate numpy arrays are ever allocated.
-
-The outer realisation loop uses prange so numba's thread pool distributes
-work across all physical cores.  The caller (simulator.py) uses n_workers=1
-so only one res_s array (≈22 MB) lives in memory at a time — fitting in L3
-cache instead of 16 × 22 MB = 358 MB thrashing RAM.
-
-Usage
------
-    from .nb_kernels import NUMBA_AVAILABLE, nb_accumulate_strong
-    if NUMBA_AVAILABLE:
-        nb_accumulate_strong(res_s, n_s, f_obs, T_obs,
-                             log_flo, log_fhi, cdf_x, cdf_fp,
-                             window_name='sinc')
-"""
+"""Numba-JIT kernels for strong-source and σ₀ Monte Carlo accumulation."""
 
 import numpy as np
 
@@ -91,19 +72,7 @@ if NUMBA_AVAILABLE:
     @njit(cache=False, parallel=True, fastmath=True)
     def _strong_core(res_s, n_src_arr, f_obs, T_obs,
                      log_flo, log_fhi, cdf_x, cdf_fp, r_cdf, r_vals, w_fn):
-        """
-        Inner loop: accumulate strong-source residuals into res_s.
-
-        res_s    : (n_real, n_modes) complex128 — written in-place
-        n_src_arr: (n_real,) int64 — Poisson-drawn source count per realisation
-        r_cdf    : (M,) float64 — CDF axis (0→1) for |R| inverse-CDF table
-        r_vals   : (M,) float64 — |R| values at r_cdf grid points
-        w_fn     : @njit scalar window function (f, fk, T) -> float64
-
-        prange parallelises over realisations using numba's thread pool.
-        Each realisation is independent so there is no race condition on
-        res_s (different i → different row).  RNG state is per-thread.
-        """
+        """Accumulate strong-source residuals into res_s (n_real, n_modes), in-place."""
         n_real  = res_s.shape[0]
         n_modes = f_obs.shape[0]
         INV4PI  = 0.25 / np.pi
@@ -111,26 +80,17 @@ if NUMBA_AVAILABLE:
 
         for i in prange(n_real):
             for j in range(n_src_arr[i]):
-                # ── Random draws ─────────────────────────────────────────────
                 A    = _interp1(np.random.random(), cdf_x, cdf_fp)
                 f_s  = np.exp(log_flo + np.random.random() * (log_fhi - log_flo))
                 absR = _sample_absR(r_cdf, r_vals)
                 dbar = np.random.random() * TWO_PI
-
-                # ── pref · e^{iδ} ────────────────────────────────────────────
-                # pref = A·|R| / (4π·i·f) is purely imaginary.
-                # pref · e^{iδ} = P·(sin δ − i·cos δ)  where P = A|R|/(4πf).
-                # conj(pref · e^{iδ}) = pref · e^{−iδ}  [since pref is purely imaginary]
+                # pref = A|R|/(4πf): pref·e^{iδ} = P(sinδ − i·cosδ)
                 P     = A * absR * INV4PI / f_s
                 sin_d = np.sin(dbar)
                 cos_d = np.cos(dbar)
                 pe_r  =  P * sin_d    # real part of pref·e^{iδ}
                 pe_i  = -P * cos_d    # imag part
 
-                # ── Accumulate over modes ─────────────────────────────────────
-                # pref·e^{iδ}·wp + conj(pref·e^{iδ})·wm
-                #   = (pe_r + i·pe_i)·wp + (pe_r − i·pe_i)·wm
-                #   = pe_r·(wp+wm)  +  i·pe_i·(wp−wm)
                 for k in range(n_modes):
                     fk = f_obs[k]
                     wp = w_fn( f_s, fk, T_obs)
@@ -138,9 +98,7 @@ if NUMBA_AVAILABLE:
                     res_s[i, k] += complex(pe_r * (wp + wm),
                                            pe_i * (wp - wm))
 
-    # ── Per-window compiled instances ─────────────────────────────────────────
-    # Separate wrappers force numba to compile one specialisation per window,
-    # allowing the window call to be fully inlined in the hot loop.
+    # ── Per-window compiled instances (one specialisation per window) ─────────
 
     @njit(cache=False, fastmath=True)
     def _strong_tophat(res_s, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, r_cdf, r_vals):
@@ -163,6 +121,47 @@ if NUMBA_AVAILABLE:
         'sinc':     _strong_sinc,
         'whitened': _strong_whitened,
         'tm':       _strong_tm,
+    }
+
+    # ── σ₀² kernel ────────────────────────────────────────────────────────────
+
+    @njit(cache=False, parallel=True, fastmath=True)
+    def _sigma2_core(s2_out, n_src_arr, f_obs, T_obs,
+                     log_flo, log_fhi, cdf_x, cdf_fp, prefactor, w_fn):
+        """Accumulate σ₀² into s2_out (n_real, n_modes), in-place."""
+        n_real  = s2_out.shape[0]
+        n_modes = f_obs.shape[0]
+        log_span = log_fhi - log_flo
+        for i in prange(n_real):
+            for j in range(n_src_arr[i]):
+                A   = _interp1(np.random.random(), cdf_x, cdf_fp)
+                f_s = np.exp(log_flo + np.random.random() * log_span)
+                pref = prefactor * A * A / (f_s * f_s)
+                for k in range(n_modes):
+                    w = w_fn(f_s, f_obs[k], T_obs)
+                    s2_out[i, k] += pref * w * w
+
+    @njit(cache=False, fastmath=True)
+    def _sigma2_tophat(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf):
+        _sigma2_core(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf, _w_tophat)
+
+    @njit(cache=False, fastmath=True)
+    def _sigma2_sinc(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf):
+        _sigma2_core(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf, _w_sinc)
+
+    @njit(cache=False, fastmath=True)
+    def _sigma2_whitened(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf):
+        _sigma2_core(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf, _w_whitened)
+
+    @njit(cache=False, fastmath=True)
+    def _sigma2_tm(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf):
+        _sigma2_core(s2_out, n_src_arr, f_obs, T_obs, lf_lo, lf_hi, cx, cf, pf, _w_tm)
+
+    _NB_SIGMA2_DISPATCH = {
+        'tophat':   _sigma2_tophat,
+        'sinc':     _sigma2_sinc,
+        'whitened': _sigma2_whitened,
+        'tm':       _sigma2_tm,
     }
 
     # ── Tail kernel: accumulate <|g_k|^3> over MC samples ────────────────────
@@ -228,13 +227,7 @@ if NUMBA_AVAILABLE:
     @njit(cache=True, fastmath=True)
     def _nb_trilinear(m1_flat, m2_flat, z_flat, grid,
                       lm1_min, lm1_step, lm2_min, lm2_step, lz_min, lz_step):
-        """
-        Evaluate a 3-D regular-grid trilinear interpolant at n points.
-
-        Axes:  0 = log10(m1),  1 = log10(m2),  2 = log10(z)
-        All boundary values are clamped (fill_value=0 outside is handled by
-        the caller setting grid values to 0 beyond physical range).
-        """
+        """Trilinear interpolation on a (log m1, log m2, log z) regular grid."""
         n   = len(m1_flat)
         out = np.empty(n)
         n0  = grid.shape[0]
@@ -244,7 +237,6 @@ if NUMBA_AVAILABLE:
         lim1 = float(n1) - 1.0001
         lim2 = float(n2) - 1.0001
         for ii in range(n):
-            # clip inputs
             m1c = m1_flat[ii]
             if m1c < 1e5:  m1c = 1e5
             if m1c > 1e13: m1c = 1e13
@@ -254,7 +246,6 @@ if NUMBA_AVAILABLE:
             zc  = z_flat[ii]
             if zc  < 1e-5: zc  = 1e-5
             if zc  > 6.0:  zc  = 6.0
-            # fractional indices
             x0 = (np.log10(m1c) - lm1_min) / lm1_step
             x1 = (np.log10(m2c) - lm2_min) / lm2_step
             x2 = (np.log10(zc)  - lz_min)  / lz_step
@@ -266,7 +257,6 @@ if NUMBA_AVAILABLE:
             if x2 > lim2: x2 = lim2
             i0 = int(x0); i1 = int(x1); i2 = int(x2)
             t0 = x0 - i0;  t1 = x1 - i1;  t2 = x2 - i2
-            # trilinear
             c00 = grid[i0,   i1,   i2  ] * (1.0-t2) + grid[i0,   i1,   i2+1] * t2
             c01 = grid[i0,   i1+1, i2  ] * (1.0-t2) + grid[i0,   i1+1, i2+1] * t2
             c10 = grid[i0+1, i1,   i2  ] * (1.0-t2) + grid[i0+1, i1,   i2+1] * t2
@@ -278,21 +268,7 @@ if NUMBA_AVAILABLE:
 
     def nb_model_i_eval(m1, m2, z, grid,
                         lm1_min, lm1_step, lm2_min, lm2_step, lz_min, lz_step):
-        """
-        Evaluate ModelI rate grid via numba trilinear interpolation.
-
-        Parameters
-        ----------
-        m1, m2 : array-like  — SMBH masses [Msun]
-        z      : array-like  — redshift
-        grid   : (n0,n1,n2) float64 C-contiguous rate array
-        lm*_min, lm*_step : float — log10(m) axis origin and spacing
-        lz_min, lz_step   : float — log10(z) axis origin and spacing
-
-        Returns
-        -------
-        out : ndarray, same shape as m1
-        """
+        """Evaluate ModelI rate grid; returns array with same shape as m1."""
         shape  = np.asarray(m1).shape
         m1f = np.ascontiguousarray(np.ravel(m1), dtype=np.float64)
         m2f = np.ascontiguousarray(np.ravel(m2), dtype=np.float64)
@@ -308,22 +284,7 @@ if NUMBA_AVAILABLE:
     def nb_accumulate_strong(res_s, n_src_arr, f_obs, T_obs,
                              log_flo, log_fhi, cdf_x, cdf_fp,
                              r_cdf, r_vals, window_name):
-        """
-        Accumulate strong-source residuals into res_s using the JIT kernel.
-
-        Parameters
-        ----------
-        res_s       : (n_real, n_modes) complex128 ndarray, written in-place
-        n_src_arr   : (n_real,) int64 — Poisson-drawn source count per realisation
-        f_obs       : (n_modes,) float64 — observation mode frequencies [Hz]
-        T_obs       : float — observation time [s]
-        log_flo/fhi : float — log(f) bounds of the source frequency bin
-        cdf_x       : (M,) float64 — cumulative probability grid (0→1)
-        cdf_fp      : (M,) float64 — amplitude values at cdf_x
-        r_cdf       : (M,) float64 — CDF axis for |R| inverse-CDF table
-        r_vals      : (M,) float64 — |R| values at r_cdf grid points
-        window_name : str — one of 'tophat', 'sinc', 'whitened', 'tm'
-        """
+        """Accumulate strong-source residuals into res_s (n_real, n_modes), in-place."""
         kernel = _NB_STRONG_DISPATCH.get(window_name)
         if kernel is None:
             raise ValueError(
@@ -342,20 +303,7 @@ if NUMBA_AVAILABLE:
 
     def nb_accumulate_tail(tn_out, n_samples, f_obs, T_obs,
                            log_flo, log_fhi, r_cdf, r_vals, window_name):
-        """
-        Accumulate <|g_k|^3> into tn_out using the JIT tail kernel.
-
-        Parameters
-        ----------
-        tn_out      : (n_modes,) float64 — zero-initialised, written in-place
-        n_samples   : int — MC sample count
-        f_obs       : (n_modes,) float64 — observation frequencies [Hz]
-        T_obs       : float — observation time [s]
-        log_flo/fhi : float — log(f) bounds of source frequency bin (log-uniform draw)
-        r_cdf       : (M,) float64 — CDF axis for |R| inverse-CDF table
-        r_vals      : (M,) float64 — |R| values at r_cdf grid points
-        window_name : str — one of 'tophat', 'sinc', 'whitened', 'tm'
-        """
+        """Accumulate <|g_k|^3> into tn_out (n_modes,), in-place."""
         kernel = _NB_TAIL_DISPATCH.get(window_name)
         if kernel is None:
             raise ValueError(
@@ -370,13 +318,27 @@ if NUMBA_AVAILABLE:
                np.ascontiguousarray(r_cdf,  dtype=np.float64),
                np.ascontiguousarray(r_vals, dtype=np.float64))
 
+    def nb_accumulate_sigma2(s2_out, n_src_arr, f_obs, T_obs,
+                              log_flo, log_fhi, cdf_x, cdf_fp,
+                              prefactor, window_name):
+        """Accumulate σ₀² into s2_out (n_real, n_modes), in-place."""
+        kernel = _NB_SIGMA2_DISPATCH.get(window_name)
+        if kernel is None:
+            raise ValueError(
+                f"No numba sigma2 kernel for window '{window_name}'. "
+                f"Available: {list(_NB_SIGMA2_DISPATCH)}")
+        kernel(np.ascontiguousarray(s2_out,   dtype=np.float64),
+               np.ascontiguousarray(n_src_arr, dtype=np.int64),
+               np.ascontiguousarray(f_obs,     dtype=np.float64),
+               float(T_obs),
+               float(log_flo),
+               float(log_fhi),
+               np.ascontiguousarray(cdf_x,  dtype=np.float64),
+               np.ascontiguousarray(cdf_fp, dtype=np.float64),
+               float(prefactor))
+
     def warmup(window_name='sinc', n_modes=14, r_cdf=None, r_vals=None):
-        """
-        Trigger JIT compilation now so the first real run isn't delayed.
-        Call once after constructing the simulator.
-        Pass r_cdf/r_vals from windows._R_CDF_AXIS/_R_VALS_AXIS, or leave None
-        to use a minimal 2-point dummy table.
-        """
+        """Trigger JIT compilation; call once before the first real run."""
         from .windows import _R_CDF_AXIS, _R_VALS_AXIS
         if r_cdf is None:
             r_cdf = _R_CDF_AXIS
@@ -392,7 +354,10 @@ if NUMBA_AVAILABLE:
         dummy_t = np.zeros(n_modes)
         nb_accumulate_tail(dummy_t, 2, np.ones(n_modes) * 1e-8, 5e8,
                            np.log(1e-9), np.log(1e-8), r_cdf, r_vals, window_name)
-        # Warm up the trilinear interpolator kernel
+        dummy_s2 = np.zeros((2, n_modes), dtype=np.float64)
+        nb_accumulate_sigma2(dummy_s2, n_src_dummy, np.ones(n_modes) * 1e-8, 5e8,
+                             np.log(1e-9), np.log(1e-8),
+                             cdf_x, cdf_fp, 1e-5, window_name)
         dummy_grid = np.zeros((2, 2, 2), dtype=np.float64)
         nb_model_i_eval(np.array([1e8]), np.array([1e8]), np.array([0.1]),
                         dummy_grid, 5.0, 8.0, 5.0, 8.0, -8.0, 1.0)
@@ -403,6 +368,9 @@ else:
         raise RuntimeError("numba is not installed.")
 
     def nb_accumulate_tail(*args, **kwargs):
+        raise RuntimeError("numba is not installed.")
+
+    def nb_accumulate_sigma2(*args, **kwargs):
         raise RuntimeError("numba is not installed.")
 
     def nb_model_i_eval(*args, **kwargs):

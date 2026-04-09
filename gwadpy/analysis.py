@@ -6,6 +6,7 @@ compute_likelihood  — overlap integral L_k = ∫ p_model · p_data d(log10 x).
 """
 
 from pathlib import Path
+from time import time as _time
 
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -15,7 +16,8 @@ from scipy.interpolate import interp1d
 def compute_pdfs(res, tail_norm, n_modes, f_modes,
                  kde_bw=0.1, n_eval=1000, n_hist=80,
                  min_counts=15, low_quantile=0.01,
-                 n_kde_max=10_000, sim=None, gaussian=False):
+                 n_kde_max=10_000, sim=None, gaussian=False,
+                 verbose=True):
     """
     Build a three-region composite PDF for |δt_k| at each mode:
       x < x_lo  : analytic A·x²              (CLT low tail)
@@ -51,6 +53,8 @@ def compute_pdfs(res, tail_norm, n_modes, f_modes,
     pdf_out  = np.zeros((n_modes, n_eval))
     dt_cross = np.zeros(n_modes)
 
+    _t_total = _time()
+
     for ki in range(n_modes):
         C_tail  = tail_norm[ki]
         samples = np.abs(res[:, ki]); samples = samples[samples > 0]
@@ -58,6 +62,7 @@ def compute_pdfs(res, tail_norm, n_modes, f_modes,
         kde_in  = (samples if len(samples) <= n_kde_max
                    else np.random.choice(samples, n_kde_max, replace=False))
         kde     = gaussian_kde(np.log10(kde_in), bw_method=kde_bw)
+
         dt_lo   = np.percentile(samples, 0.05)
         dt_hi   = np.percentile(samples, 99.9) * 500
         dt_grid = np.logspace(np.log10(dt_lo), np.log10(dt_hi), n_eval)
@@ -88,6 +93,9 @@ def compute_pdfs(res, tail_norm, n_modes, f_modes,
         dt_grids[ki] = dt_grid
         pdf_out[ki]  = pdf
         dt_cross[ki] = x_hi
+
+    if verbose:
+        print(f"  Total KDE+tail: {_time() - _t_total:.2f}s")
 
     return dt_grids, pdf_out, dt_cross
 

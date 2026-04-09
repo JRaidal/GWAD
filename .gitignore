@@ -8,8 +8,8 @@ __pycache__/
 *.nbc
 
 # Package runtime caches (regenerated automatically)
-.cache/
-.bin_cache/
+**/.cache/
+**/.bin_cache/
 
 # macOS
 .DS_Store
@@ -21,3 +21,19 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Results and output data
+results/
+*.npz
+*.pkl
+
+# Output figures
+*.pdf
+*.png
+*.csv
+
+# PTA data directories
+30*/
+
+# Specific scripts (not part of the package)
+plot_*.py
