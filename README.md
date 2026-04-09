@@ -117,43 +117,6 @@ The directory passed to `--pta-data-dir` must contain:
 
 This matches the output format of the Ceffyl free-spectrum analysis (NANOGrav 15yr).
 
-## Standalone scripts
-
-Several standalone scripts are provided for producing publication figures and diagnostics.  Each accepts the same model subcommands (`modelI`, `modelII`, `bpl`) and environmental-hardening flags as the main CLI.
-
-### `plot_sigma0.py` — σ₀ mixing distribution (single panel)
-
-Plots `dP/d ln σ₀` for multiple PTA modes overlaid in one panel.
-
-```bash
-python plot_sigma0.py [--k-modes 1 7 14] [--n-real 3000000] [--output sigma0.pdf] \
-    [--env-f-ref 30e-9] modelI [--pbh 0.37]
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `--k-modes` | `1 7 14` | PTA modes (1-indexed) to overlay |
-| `--n-real` | `3000000` | MC realisations for the σ₀ histogram |
-| `--n-tail-dex` | `1.5` | Decades above `x_hi` that the tail extends |
-| `--output` | `sigma0_panel.pdf` | Output file |
-
-### `plot_pdfs_conv.py` — residual PDFs with NI convolution overlay
-
-Produces the multi-row PDF panels with the VA Gaussian (no-interference) convolution PDF overlaid.
-
-```bash
-python plot_pdfs_conv.py [--k-modes 1 7 14] [--output pdfs_conv.pdf] \
-    [--env-f-ref 30e-9] modelI [--pbh 0.37]
-```
-
-### `count_sources.py` — expected source counts per PTA bin
-
-Prints a table of expected GW source counts `N_k = ∫ dN/(dA d ln f) d ln A d ln f` for each PTA Fourier mode, comparing GW-only and GW+env side by side.
-
-```bash
-python count_sources.py [--env-f-ref 30e-9] modelI [--pbh 0.37]
-```
-
 ## PDF construction
 
 The residual PDF at each mode is a three-region composite:
