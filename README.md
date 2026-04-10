@@ -7,9 +7,8 @@ Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PD
 1. Computes the GW amplitude distribution (GWAD) from a chosen merger rate model.
 2. Simulates realisations of the complex timing residual vector across all PTA Fourier modes.
 3. Estimates the residual PDF at each mode via a three-region composite: CLT low tail, KDE bulk, and a full GWAD integral high tail.
-4. Produces a validation plot comparing simulated residuals to PTA data (NANOGrav 15yr format).
-5. Computes the overlap likelihood between model PDFs and PTA data.
-6. Computes and plots the no-interference (VA Gaussian) σ₀ mixing distribution `dP/d ln σ₀`.
+4. Produces a validation plot (PDF breakdown for k=1,7,14).
+5. Optionally (`--variance`): computes `dP/d ln σ₀²`, plots it alongside a σ₀² violin vs NANOGrav 15yr data, and evaluates the overlap likelihood.
 
 ## Package layout
 
@@ -21,9 +20,9 @@ Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PD
 | `gwad.py` | `BrokenPowerLawGWAD`, cosmological GWAD integral |
 | `windows.py` | PTA window functions, GW response sampler |
 | `simulator.py` | `GlobalResidualsSimulator` |
-| `analysis.py` | `compute_pdfs`, `compute_likelihood` |
+| `analysis.py` | `compute_pdfs`, `compute_variance_likelihood` |
 | `plotting.py` | `make_validation_plot` |
-| `sigma0.py` | `sample_sigma2`, `compute_sigma0_tail`, `composite_sigma0_pdf`, `make_sigma0_plot` |
+| `sigma0.py` | `sample_sigma2`, `compute_sigma0_tail`, `composite_sigma0_pdf`, `make_variance_plot` |
 | `_nb_kernels.py` | Numba JIT kernels for residual and σ₀ MC sampling |
 | `__main__.py` | CLI entry point |
 
@@ -56,8 +55,8 @@ python -m gwadpy [global options] {modelI|modelII|bpl} [model options]
 | `--kde-bw` | `0.1` | KDE bandwidth (in log10 space) |
 | `--kde-max-pts` | `10000` | Maximum realisations used to fit each per-mode KDE |
 | `--gaussian` | off | Treat all sources as Gaussian; disables strong sources and the high-residual tail |
-| `--sigma0` | off | Also compute and save the σ₀ mixing distribution `dP/d ln σ₀` |
-| `--sigma0-n-real` | `100000` | MC realisations for the σ₀ histogram bulk |
+| `--variance` | off | Also produce a combined `dP/d ln σ₀²` + σ₀² violin plot |
+| `--variance-n-real` | `100000` | MC realisations for the σ₀² histogram bulk |
 | `--pta-data-dir` | *(omit)* | Path to PTA data directory (enables likelihood) |
 
 ### Model options
@@ -102,17 +101,17 @@ python -m gwadpy --window sinc --n-bins 30 --n-real 2000 \
 | File | Description |
 |---|---|
 | `<prefix>_pdfs.npz` | Arrays: `f_modes`, `dt_grids`, `pdf`, `tail_norm`, `dt_cross` |
-| `<prefix>_validation.pdf` | Violin + single-mode PDF plot |
-| `<prefix>_sigma0.npz` | Arrays: `f_modes`, `sw`, `s2_draws`, `univ_grid`, `tail_all` (with `--sigma0`) |
-| `<prefix>_sigma0.pdf` | σ₀ mixing-distribution plot per mode (with `--sigma0`) |
-| stdout | Per-mode and total log-likelihood (if `--pta-data-dir` provided) |
+| `<prefix>_validation.pdf` | Three-panel PDF breakdown for k=1,7,14 |
+| `<prefix>_variance.npz` | Arrays: `f_modes`, `sw`, `s2_draws`, `univ_grid`, `tail_all` (with `--variance`) |
+| `<prefix>_variance.pdf` | `dP/d ln σ₀²` panels + σ₀² violin vs PTA data (with `--variance`) |
+| stdout | Per-mode and total σ₀² log-likelihood (if `--variance` and `--pta-data-dir` both given) |
 
 ## PTA data format
 
 The directory passed to `--pta-data-dir` must contain:
 
 - `density.npy` — shape `(1, n_modes, n_bins)`, log-probability values
-- `log10rhogrid.npy` — shape `(n_bins,)`, log10(|δt|/s) grid
+- `log10rhogrid.npy` — shape `(n_bins,)`, log10(σ_k/s) grid
 - `freqs.npy` — shape `(n_modes,)`, mode frequencies [Hz]
 
 This matches the output format of the Ceffyl free-spectrum analysis (NANOGrav 15yr).

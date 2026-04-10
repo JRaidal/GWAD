@@ -1,8 +1,9 @@
 """
 Post-simulation analysis: PDF estimation and likelihood.
 
-compute_pdfs        — KDE + analytic tail stitching for each PTA mode.
-compute_likelihood  — overlap integral L_k = ∫ p_model · p_data d(log10 x).
+compute_pdfs               — KDE + analytic tail stitching for each PTA mode.
+compute_likelihood         — overlap integral L_k = ∫ p_model · p_data d(log10 x).
+compute_variance_likelihood — same integral in σ₀² space using composite_sigma0_pdf output.
 """
 
 from pathlib import Path
@@ -155,6 +156,58 @@ def compute_likelihood(dt_grids, pdf_model, pta_data_dir, f_model, n_modes):
         p_mod_i = interp1d(lx_mod,  p_mod_L10,  kind='linear',
                            bounds_error=False, fill_value=0.0)(x_comm)
         p_dat_i = interp1d(L10rho, p_data_L10, kind='linear',
+                           bounds_error=False, fill_value=0.0)(x_comm)
+
+        L_k = np.trapz(p_mod_i * p_dat_i, x_comm)
+        log_L_modes[k] = np.log(L_k) if L_k > 0 else -np.inf
+
+    valid       = np.isfinite(log_L_modes)
+    log_L_total = float(np.sum(log_L_modes[valid]))
+    return log_L_modes, log_L_total
+
+
+def compute_variance_likelihood(s0_data, pta_data_dir, f_model, n_modes):
+    """
+    Overlap likelihood between the σ₀² model PDF and PTA data.
+
+    L_k = ∫ p_model(log10 σ₀²) · p_data(log10 σ₀²) d(log10 σ₀²)
+
+    log10rhogrid.npy stores log10(σ_k); since σ₀² = σ_k², the data grid maps as
+    log10(σ₀²) = 2·log10(σ_k), and dP/d log10(σ₀²) = (1/2)·dP/d log10(σ_k).
+    """
+    data_dir  = Path(pta_data_dir)
+    prob_raw  = np.load(data_dir / 'density.npy')[0]    # (n_ng, n_bins)
+    L10rho    = np.load(data_dir / 'log10rhogrid.npy')  # log10(σ_k)
+    fNG       = np.load(data_dir / 'freqs.npy')         # (n_ng,)
+
+    L10s2_ng  = 2.0 * L10rho   # log10(σ₀²) grid for data
+
+    paired = [(int(np.argmin(np.abs(f_model - fj))), j)
+              for j, fj in enumerate(fNG[:n_modes])]
+
+    log_L_modes = np.full(n_modes, np.nan)
+    for k, j in paired:
+        p_raw = np.exp(prob_raw[j])
+        norm  = np.trapz(p_raw, L10rho)
+        if norm <= 0:
+            continue
+        # dP/d log10(σ) → dP/d log10(σ₀²): Jacobian = 1/2
+        p_data_L10s2 = (p_raw / norm) * 0.5
+
+        # Model composite PDF: x_comp in σ₀ units, y_comp = dP/d ln σ₀
+        x_s2      = s0_data['x_comp'][k] ** 2
+        p_mod_L10 = (s0_data['y_comp'][k] / 2) * np.log(10)  # dP/d log10(σ₀²)
+        lx_mod    = np.log10(x_s2)
+
+        x_lo = max(lx_mod.min(), L10s2_ng.min())
+        x_hi = min(lx_mod.max(), L10s2_ng.max())
+        if x_lo >= x_hi:
+            continue
+
+        x_comm  = np.linspace(x_lo, x_hi, 3000)
+        p_mod_i = interp1d(lx_mod,   p_mod_L10,   kind='linear',
+                           bounds_error=False, fill_value=0.0)(x_comm)
+        p_dat_i = interp1d(L10s2_ng, p_data_L10s2, kind='linear',
                            bounds_error=False, fill_value=0.0)(x_comm)
 
         L_k = np.trapz(p_mod_i * p_dat_i, x_comm)

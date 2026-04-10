@@ -18,7 +18,7 @@ from .merger_rates import ModelI, ModelII
 from .gwad import BrokenPowerLawGWAD
 from .windows import WINDOWS
 from .simulator import GlobalResidualsSimulator
-from .analysis import compute_pdfs, compute_likelihood
+from .analysis import compute_pdfs
 from .plotting import make_validation_plot
 
 
@@ -72,11 +72,11 @@ def build_parser():
                                  help='Treat all sources as Gaussian (forces n_strong=0, '
                                       'disables the power-law high-residual tail)')
 
-    # σ₀ mixing distribution
-    p.add_argument('--sigma0', action='store_true',
-                               help='Also compute and save the dP/d ln σ₀ mixing distribution')
-    p.add_argument('--sigma0-n-real', type=int, default=100_000,
-                                      help='MC realisations for the σ₀ histogram bulk')
+    # Variance distribution (σ₀²)
+    p.add_argument('--variance', action='store_true',
+                                 help='Also produce a combined dP/d ln σ₀² + violin plot')
+    p.add_argument('--variance-n-real', type=int, default=100_000,
+                                        help='MC realisations for the σ₀² histogram bulk')
 
     # PTA data (optional — needed for likelihood)
     p.add_argument('--pta-data-dir', default=None,
@@ -200,57 +200,56 @@ def main():
     # ── Validation plot ───────────────────────────────────────────────────────
     plot_path = f"{prefix}_validation.pdf"
     make_validation_plot(res, res_strong, res_weak, tail_norm,
-                         ng_data, sim, plot_path,
+                         sim, plot_path,
                          args.n_real, args.n_strong, model_label,
                          gaussian=args.gaussian)
     print(f"  Validation plot  →  {plot_path}")
 
-    # ── σ₀ mixing distribution ───────────────────────────────────────────────
-    if args.sigma0:
-        from .sigma0 import composite_sigma0_pdf, make_sigma0_plot
-        print(f"  σ₀ MC ({args.sigma0_n_real:,} realisations) ...", end='', flush=True)
+    # ── Variance distribution ─────────────────────────────────────────────────
+    if args.variance:
+        from .sigma0 import composite_sigma0_pdf, make_variance_plot
+        print(f"  σ₀² MC ({args.variance_n_real:,} realisations) ...", end='', flush=True)
         _t0 = _time()
         s0_data = composite_sigma0_pdf(
             sim,
-            n_real   = args.sigma0_n_real,
-            rng      = np.random.default_rng(42),
+            n_real = args.variance_n_real,
+            rng    = np.random.default_rng(42),
         )
         print(f" done  ({_time() - _t0:.1f}s)")
 
-        # Save data
-        print("  Saving σ₀ data ...", end='', flush=True)
-        npz_s0 = f"{prefix}_sigma0.npz"
+        print("  Saving σ₀² data ...", end='', flush=True)
+        npz_s0 = f"{prefix}_variance.npz"
         np.savez(
             npz_s0,
-            f_modes   = sim.f_obs,           # (n_modes,)
-            sw        = s0_data['sw'],        # (n_modes,)  σ²_weak
-            s2_draws  = s0_data['s2_draws'],  # (n_real, n_modes)  raw σ₀² draws
-            univ_grid = s0_data['univ_grid'], # (n_u,)   universal σ₀ grid
-            tail_all  = s0_data['tail_all'],  # (n_u, n_modes)  analytic tail
+            f_modes   = sim.f_obs,
+            sw        = s0_data['sw'],
+            s2_draws  = s0_data['s2_draws'],
+            univ_grid = s0_data['univ_grid'],
+            tail_all  = s0_data['tail_all'],
         )
         print(f" done  →  {npz_s0}")
 
-        # Save plot
-        print("  Plotting σ₀ distribution ...", end='', flush=True)
+        print("  Plotting variance distribution ...", end='', flush=True)
         _t0 = _time()
-        plot_s0 = f"{prefix}_sigma0.pdf"
-        make_sigma0_plot(sim, s0_data, plot_s0, model_label=model_label)
-        print(f" done  ({_time() - _t0:.1f}s)  →  {plot_s0}")
+        plot_var = f"{prefix}_variance.pdf"
+        make_variance_plot(sim, s0_data, ng_data, plot_var, model_label=model_label)
+        print(f" done  ({_time() - _t0:.1f}s)  →  {plot_var}")
 
-    # ── Likelihood ────────────────────────────────────────────────────────────
-    if args.pta_data_dir is not None:
-        try:
-            log_L_modes, log_L_total = compute_likelihood(
-                dt_grids, pdf_out, args.pta_data_dir, sim.f_obs, args.n_modes)
-            n_valid = int(np.sum(np.isfinite(log_L_modes)))
-            print(f"\n  Log-likelihood over {n_valid} modes:")
-            for k in range(args.n_modes):
-                tag = '  (no overlap)' if not np.isfinite(log_L_modes[k]) else ''
-                print(f"    k={k+1:2d}  {sim.f_obs[k]*1e9:5.1f} nHz  "
-                      f"ln L = {log_L_modes[k]:9.4f}{tag}")
-            print(f"  Total: ln L = {log_L_total:.4f}")
-        except FileNotFoundError as e:
-            print(f"  Warning: could not compute likelihood ({e})")
+        # ── σ₀² likelihood ───────────────────────────────────────────────────
+        if args.pta_data_dir is not None:
+            try:
+                from .analysis import compute_variance_likelihood
+                log_L_modes, log_L_total = compute_variance_likelihood(
+                    s0_data, args.pta_data_dir, sim.f_obs, args.n_modes)
+                n_valid = int(np.sum(np.isfinite(log_L_modes)))
+                print(f"\n  σ₀² log-likelihood over {n_valid} modes:")
+                for k in range(args.n_modes):
+                    tag = '  (no overlap)' if not np.isfinite(log_L_modes[k]) else ''
+                    print(f"    k={k+1:2d}  {sim.f_obs[k]*1e9:5.1f} nHz  "
+                          f"ln L = {log_L_modes[k]:9.4f}{tag}")
+                print(f"  Total: ln L = {log_L_total:.4f}")
+            except FileNotFoundError as e:
+                print(f"  Warning: could not compute likelihood ({e})")
 
 
 if __name__ == '__main__':

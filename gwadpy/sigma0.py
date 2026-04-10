@@ -25,6 +25,26 @@ def _sigma2_weak(sim):
     return base * _PREFACTOR * (4.0 * np.pi) ** 2
 
 
+# ── Analytic mean (weak floor + strong-source tail) ──────────────────────────
+
+def _sigma2_mean(sim, n_f=20):
+    """Analytic mean of σ₀²_k including the strong-source tail; returns (n_modes,)."""
+    mean  = _sigma2_weak(sim).copy()
+    f_obs = sim.f_obs
+    for s in sim._bin_cache:
+        if s['N_strong'] <= 0 or s['strong_cdf'] is None:
+            continue
+        A_arr   = s['strong_A_arr']
+        cdf_arr = s['strong_cdf']
+        A_mid   = np.sqrt(A_arr[:-1] * A_arr[1:])
+        A2_mean = float(np.sum(A_mid**2 * np.diff(cdf_arr)))
+        f_q     = np.exp(np.linspace(np.log(s['flo']), np.log(s['fhi']), n_f))
+        Gk      = (np.abs(sim.window_fn(f_q[:, None], f_obs[None, :], sim.T_obs))**2
+                   / f_q[:, None]**2)
+        mean   += s['N_strong'] * _PREFACTOR * A2_mean * Gk.mean(axis=0)
+    return mean
+
+
 # ── Monte Carlo σ₀² sampler ──────────────────────────────────────────────────
 
 def sample_sigma2(sim, n_real, use_wm=False, rng=None, chunk=5_000):
@@ -410,3 +430,181 @@ def make_sigma0_plot(sim, data, out_path, k_modes=None, n_tail_dex=1.5, model_la
     plt.savefig(out_path)
     plt.close()
     print(f"  σ₀ plot → {out_path}")
+
+
+# ── Combined variance plot (3 × dP/d ln σ₀² + violin) ───────────────────────
+
+def make_variance_plot(sim, data, ng_data, out_path, model_label=None,
+                       k_modes=None, ylim=(-17.0, -11.0), n_tail_dex=1.5):
+    """Four-panel figure: dP/d ln σ₀² for k=1,7,14 + σ₀² violin vs PTA data."""
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+    if k_modes is None:
+        k_modes = [k for k in [1, 7, 14] if k <= sim.n_modes]
+
+    plt.rcParams.update({
+        'text.usetex': True, 'font.family': 'serif',
+        'font.serif': ['Times', 'Times New Roman', 'DejaVu Serif'],
+        'font.size': 15, 'axes.labelsize': 15, 'axes.titlesize': 15,
+        'xtick.labelsize': 13, 'ytick.labelsize': 13, 'legend.fontsize': 11,
+        'figure.dpi': 150, 'savefig.dpi': 300,
+        'savefig.bbox': 'tight', 'savefig.pad_inches': 0.05,
+        'lines.linewidth': 1.5, 'axes.linewidth': 1.0,
+        'axes.grid': True, 'grid.alpha': 0.3, 'grid.linewidth': 0.5,
+        'xtick.major.width': 1.0, 'ytick.major.width': 1.0,
+        'xtick.minor.width': 0.5, 'ytick.minor.width': 0.5,
+        'xtick.direction': 'in', 'ytick.direction': 'in',
+        'xtick.top': True, 'ytick.right': True,
+    })
+
+    sw        = data['sw']
+    univ_grid = data['univ_grid']
+    tail_all  = data['tail_all']
+    s2_draws  = data['s2_draws']
+    x_pos_v   = np.log10(sim.f_obs)
+
+    fig = plt.figure(figsize=(18, 4.5))
+    gs  = gridspec.GridSpec(1, 4, wspace=0.35, width_ratios=[1, 1, 1, 1.6])
+    axes_pdf = [fig.add_subplot(gs[i]) for i in range(3)]
+    ax_vln   = fig.add_subplot(gs[3])
+
+    def _line_angle(ax, x0, y0, x1, y1):
+        d0 = ax.transData.transform((x0, y0))
+        d1 = ax.transData.transform((x1, y1))
+        return np.degrees(np.arctan2(d1[1] - d0[1], d1[0] - d0[0]))
+
+    _label_kw = dict(fontsize=9, ha='left', va='bottom', rotation_mode='anchor',
+                     bbox=dict(boxstyle='round,pad=0.0', fc='white', ec='none', alpha=0.9))
+
+    # ── σ₀² PDF panels ────────────────────────────────────────────────────────
+    for col_idx, K_DEMO in enumerate(k_modes):
+        ki  = K_DEMO - 1
+        ax  = axes_pdf[col_idx]
+        f_k = sim.f_obs[ki]
+
+        bins_e = data['bins_e'][ki]
+        pdf_mc = data['pdf_mc'][ki]
+        x_comp = data['x_comp'][ki]
+        y_comp = data['y_comp'][ki]
+        tail_x = data['tail_x'][ki]
+        tail_y = data['tail_y'][ki]
+        x_hi   = data['x_hi'][ki]
+        sw2_k  = float(sw[ki])          # σ²_weak (s²)
+
+        # σ₀² axis limits
+        _xmax2   = (x_hi * 10**n_tail_dex)**2
+        m_tail   = (tail_x > x_hi) & (tail_x <= x_hi * 10**n_tail_dex)
+        _py      = np.concatenate([(pdf_mc/2)[pdf_mc > 0],
+                                   (tail_y[m_tail]/2)[tail_y[m_tail] > 0]])
+        _ymin    = _py.min() / 10 if len(_py) > 0 else 1e-6
+        _xlim    = (sw2_k * 0.3, _xmax2)
+        _ylim_ax = (_ymin, _py.max() * 5 if len(_py) > 0 else 1)
+
+        # Histogram staircase (σ₀² x-axis)
+        _x_s = np.repeat(bins_e**2, 2)[1:-1]
+        _y_s = np.repeat(pdf_mc / 2, 2)
+        ax.fill_between(_x_s, _y_s, y2=_ylim_ax[0],
+                        color='C4', alpha=0.35, label='MC samples')
+        ax.plot(_x_s, np.where(_y_s > 0, _y_s, np.nan),
+                '-', color='C4', lw=1.2, alpha=0.85)
+
+        # Composite total line
+        pos_c = (y_comp > 0) & (x_comp <= x_hi * 10**n_tail_dex)
+        ax.plot(x_comp[pos_c]**2, y_comp[pos_c] / 2,
+                '-', color='k', lw=2.5, label='Total')
+
+        # Reference tail
+        ref_y   = tail_all[:, ki]
+        ref_pos = (univ_grid**2 >= _xlim[0]) & (univ_grid**2 <= _xlim[1]) & (ref_y > 0)
+        if ref_pos.any():
+            ax.plot(univ_grid[ref_pos]**2, ref_y[ref_pos] / 2,
+                    '--', color='0.45', lw=1.6, alpha=0.85, zorder=0)
+
+        # σ²_weak marker
+        ax.axvline(sw2_k, color='0.4', lw=1.2, ls='--',
+                   label=r'$\sigma^2_{\rm weak}$')
+
+        # Slope annotation
+        if ref_pos.any():
+            _rx2 = univ_grid[ref_pos]**2
+            _ry2 = ref_y[ref_pos] / 2
+            _lx0 = np.log10(_xlim[0]); _lx1 = np.log10(_xlim[1])
+            _xb2 = 10**(_lx0 + 0.75 * (_lx1 - _lx0))
+            _xb4 = _xb2 * 4
+            _yb2 = float(np.interp(_xb2, _rx2, _ry2))
+            _yb4 = float(np.interp(_xb4, _rx2, _ry2))
+            if _yb2 > 0 and _yb4 > 0 and _ylim_ax[0] < _yb2 * 10**0.8 < _ylim_ax[1]:
+                _ang = _line_angle(ax, _xb2, _yb2, _xb4, _yb4)
+                ax.text(_xb2, _yb2 * 10**0.8, r'$\propto(\sigma_0^2)^{-3/2}$',
+                        rotation=_ang, color='black', **_label_kw)
+
+        ax.set(xscale='log', yscale='log', xlim=_xlim, ylim=_ylim_ax,
+               title=rf'$k={K_DEMO}$,  $f={f_k*1e9:.1f}$ nHz',
+               xlabel=r'$\sigma_0^2\;[\mathrm{s}^2]$',
+               ylabel=(r'$\mathrm{d}P/\mathrm{d}\ln\sigma_0^2$'
+                       if col_idx == 0 else ''))
+        if col_idx > 0:
+            ax.tick_params(labelleft=False)
+        ax.tick_params(which='both', direction='in', top=True, right=True)
+        ax.grid(True, which='major', alpha=0.3)
+        ax.grid(True, which='minor', alpha=0.15, linestyle=':')
+        if col_idx == 0:
+            ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black')
+
+    # ── Violin panel ──────────────────────────────────────────────────────────
+    data_log = np.log10(s2_draws[:20_000] + 1e-60)
+    parts = ax_vln.violinplot(
+        [data_log[:, i] for i in range(sim.n_modes)],
+        positions=x_pos_v, widths=0.054,
+        showmeans=False, showmedians=False, showextrema=False)
+    for pc in parts['bodies']:
+        pc.set_facecolor('C0'); pc.set_edgecolor('black')
+        pc.set_alpha(0.50); pc.set_linewidth(1.0)
+
+    if ng_data is not None:
+        y_grid = np.linspace(-20, -8, 4000)
+        for (fng, pdf_fn) in ng_data[:sim.n_modes]:
+            xc = np.log10(fng)
+            if xc < x_pos_v.min() - 0.2 or xc > x_pos_v.max() + 0.2:
+                continue
+            xd = pdf_fn(y_grid / 2.0)
+            ax_vln.fill_betweenx(y_grid, xc - xd * 0.027, xc + xd * 0.027,
+                                 facecolor='#FF9900', edgecolor='black',
+                                 linewidth=0.8, alpha=0.40, zorder=3)
+            ax_vln.scatter(xc, y_grid[np.argmax(xd)], s=12, color='white', zorder=5)
+
+    ref_x  = np.log10(ng_data[0][0]) if ng_data else x_pos_v[0]
+    x_line = np.linspace(x_pos_v.min() - 0.05, x_pos_v.max() + 0.05, 100)
+    ax_vln.plot(x_line, -13/3 * (x_line - ref_x) - 12.4, 'k--', lw=2.0, alpha=0.7)
+
+    mean_s2  = _sigma2_mean(sim)
+    mean_log = np.log10(mean_s2 + 1e-60)
+    ax_vln.plot(x_pos_v, mean_log, '-.', color='C0', lw=1.8)
+
+    ax_vln.set(xlabel=r'$\log_{10}(f\,[\mathrm{Hz}])$',
+               ylabel=r'$\log_{10}(\sigma_0^2\,[\mathrm{s}^2])$',
+               xlim=(x_pos_v.min() - 0.10, x_pos_v.max() + 0.10),
+               ylim=ylim)
+    ax_vln.tick_params(which='both', direction='in', top=True, right=True)
+
+    legend_handles = [
+        Patch(facecolor='C0', edgecolor='black', alpha=0.6, label='Simulation'),
+        Line2D([0], [0], color='black', lw=2, ls='--', label=r'Power law $-13/3$'),
+        Line2D([0], [0], color='C0', lw=1.8, ls='-.', label=r'Mean $\sigma_0^2$'),
+    ]
+    if ng_data:
+        legend_handles.insert(1, Patch(facecolor='#FF9900', edgecolor='black',
+                                       alpha=0.5, label='NANOGrav 15yr'))
+    ax_vln.legend(handles=legend_handles, loc='upper right', frameon=True,
+                  fancybox=False, edgecolor='black', framealpha=0.95)
+
+    _title = (r'No-interference variance $\mathrm{d}P/\mathrm{d}\ln\sigma_0^2$'
+              + (f' --- {model_label}' if model_label else ''))
+    fig.suptitle(_title, fontsize=13, y=1.01)
+
+    plt.savefig(out_path)
+    plt.close()
+    print(f"  Variance plot → {out_path}")

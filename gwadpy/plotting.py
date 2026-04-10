@@ -1,13 +1,10 @@
 """
-Validation plot (section 8): violin plot of simulated residuals vs NANOGrav
-data, plus a single-mode PDF breakdown (weak / strong / analytic tail / total).
+Validation plot: PDF breakdown (weak / strong / analytic tail / total) for k=1,7,14.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter1d
 
 # Plotting Style — Publication Quality
@@ -110,42 +107,19 @@ def _composite_pdf(mag_1d, C_tail, n_hist=80,
     return centers, pdf_comp, pdf_mc, centers[ci_hi]
 
 
-def _composite_rms(res_ki, C_tail, n_hist=80, low_quantile=0.01, min_counts=15,
-                   gaussian=False):
-    """RMS of the composite PDF: analytic low/high tails + empirical bulk."""
-    pos  = np.abs(res_ki); pos = pos[pos > 0]
-    x_lo = float(np.quantile(pos, low_quantile))
-    A    = 2 * low_quantile / x_lo**2
-
-    bins  = np.logspace(np.log10(pos.min()/2), np.log10(pos.max()*2), n_hist)
-    cts, _ = np.histogram(pos, bins=bins)
-    centers = np.sqrt(bins[:-1] * bins[1:])
-    good  = np.where(cts >= min_counts)[0]
-    x_hi  = float(centers[good[-1]]) if len(good) > 0 else float(pos.max())
-
-    bulk_mask = (pos >= x_lo) & (pos <= x_hi)
-    rms2_bulk = np.mean(pos[bulk_mask]**2) * bulk_mask.mean()
-    rms2_low  = A * x_lo**4 / 4
-    rms2_high = (C_tail / x_hi) if (C_tail > 0 and not gaussian) else 0.0
-
-    return float(np.sqrt(rms2_low + rms2_bulk + rms2_high))
-
-
 # ── Public function ───────────────────────────────────────────────────────────
 
 def make_validation_plot(res, res_strong, res_weak, tail_norm,
-                         ng_data, sim, out_path, n_real, n_strong, model_label,
+                         sim, out_path, n_real, n_strong, model_label,
                          gaussian=False):
     """
-    Four-panel figure: PDF breakdown for k=1,7,14 (left×3) + violin across modes (right).
+    Three-panel figure: PDF breakdown (weak / strong / total) for k=1, 7, 14.
     """
     K_DEMOS = (1, 7, 14)
-    x_pos_v = np.log10(sim.f_obs)
 
-    fig = plt.figure(figsize=(14, 4.5))
-    gs  = gridspec.GridSpec(1, 4, wspace=0.35, width_ratios=[1, 1, 1, 1.6])
+    fig = plt.figure(figsize=(10.5, 4.5))
+    gs  = gridspec.GridSpec(1, 3, wspace=0.35)
     axes_pdf = [fig.add_subplot(gs[i]) for i in range(3)]
-    ax_vln   = fig.add_subplot(gs[3])
 
     # ── Helper: compute visual slope in display coordinates ───────────────────
     def _line_angle(ax, x0, y0, x1, y1):
@@ -236,53 +210,6 @@ def make_validation_plot(res, res_strong, res_weak, tail_norm,
                 _ang3 = _line_angle(ax_pdf, _xb, _yb_line, _xb2, _yb2)
                 ax_pdf.text(_xb, _yb, r'$\propto|\tilde{\delta t}|^{-3}$',
                             rotation=_ang3, **_label_kw)
-
-    # ── Right panel: violin plot ─────────────────────────────────────────────
-    data_log = np.log10(np.abs(res[:20_000]) + 1e-30)
-    parts = ax_vln.violinplot([data_log[:, i] for i in range(sim.n_modes)],
-                               positions=x_pos_v, widths=0.03,
-                               showmeans=False, showmedians=False, showextrema=False)
-    for pc in parts['bodies']:
-        pc.set_facecolor('C2'); pc.set_edgecolor('black')
-        pc.set_alpha(0.55); pc.set_linewidth(1.2)
-
-    if ng_data is not None:
-        y_grid = np.linspace(-10, -4, 4000)
-        for (fng, pdf_fn) in ng_data[:sim.n_modes]:
-            xc = np.log10(fng)
-            if xc < x_pos_v.min()-0.2 or xc > x_pos_v.max()+0.2:
-                continue
-            xd = pdf_fn(y_grid)
-            ax_vln.fill_betweenx(y_grid, xc-xd*0.027, xc+xd*0.027,
-                                  facecolor='#FF9900', edgecolor='black',
-                                  linewidth=0.8, alpha=0.40, zorder=3)
-            ax_vln.scatter(xc, y_grid[np.argmax(xd)], s=12, color='white', zorder=5)
-
-    ref_x  = np.log10(ng_data[0][0]) if ng_data else x_pos_v[0]
-    x_line = np.linspace(x_pos_v.min()-0.05, x_pos_v.max()+0.05, 100)
-    ax_vln.plot(x_line, -13/6*(x_line-ref_x)-6.2, 'k--', lw=2.0, alpha=0.7)
-
-    rms_log = np.array([np.log10(_composite_rms(res[:, i], tail_norm[i],
-                                                gaussian=gaussian))
-                        for i in range(sim.n_modes)])
-    ax_vln.plot(x_pos_v, rms_log, '-.', color='C2', lw=1.8, label='RMS')
-
-    ax_vln.set(xlabel=r'$\log_{10}(f\,[\mathrm{Hz}])$',
-               ylabel=r'$\log_{10}(|\tilde{\delta t}|\,[\mathrm{s}])$',
-               xlim=(x_pos_v.min()-0.10, x_pos_v.max()+0.10),
-               ylim=(-8.5, -5.5))
-    ax_vln.tick_params(which='both', direction='in', top=True, right=True)
-
-    legend_handles = [
-        Patch(facecolor='C2', edgecolor='black', alpha=0.6, label='Simulation'),
-        Line2D([0],[0], color='black', lw=2, ls='--', label=r'Power law $-13/6$'),
-        Line2D([0],[0], color='C2', lw=1.8, ls='-.', label='RMS mean'),
-    ]
-    if ng_data:
-        legend_handles.insert(1, Patch(facecolor='#FF9900', edgecolor='black',
-                                        alpha=0.5, label='NANOGrav 15yr'))
-    ax_vln.legend(handles=legend_handles, loc='upper right', frameon=True,
-                  fancybox=False, edgecolor='black', framealpha=0.95)
 
     _env = sim.env_params
     if _env:
