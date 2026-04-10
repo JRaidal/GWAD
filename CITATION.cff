@@ -37,20 +37,17 @@ authors:
       Laboratory of High Energy and Computational Physics, NICPB,
       Rävala 10, Tallinn 10143, Estonia
 
-# Uncomment and complete when the associated paper is published:
-# preferred-citation:
-#   type: article
-#   title: ""
-#   authors:
-#     - family-names: Raidal
-#       given-names: Juhan
-#     - family-names: Urrutia
-#       given-names: Juan
-#     - family-names: Vaskonen
-#       given-names: Ville
-#     - family-names: Veermäe
-#       given-names: Hardi
-#   journal: ""
-#   year:
-#   doi: ""
-#   url: "https://arxiv.org/abs/"
+preferred-citation:
+  type: article
+  title: ""
+  authors:
+    - family-names: Raidal
+      given-names: Juhan
+    - family-names: Urrutia
+      given-names: Juan
+    - family-names: Vaskonen
+      given-names: Ville
+    - family-names: Veermäe
+      given-names: Hardi
+  year: 2026
+  url: "https://arxiv.org/abs/2604.08506"

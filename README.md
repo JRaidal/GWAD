@@ -2,6 +2,12 @@
 
 Monte Carlo simulator for pulsar timing array (PTA) GW timing residuals, with PDF estimation and likelihood evaluation against observational data.
 
+## How to cite
+
+If you use GWADpy, please cite [arXiv:2604.08506](https://arxiv.org/abs/2604.08506).
+
+This code builds on analysis first developed in [arXiv:2306.17021](https://arxiv.org/abs/2306.17021).
+
 ## What it does
 
 1. Computes the GW amplitude distribution (GWAD) from a chosen merger rate model.
